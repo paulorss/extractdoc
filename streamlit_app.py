@@ -3,7 +3,7 @@
 Aplicativo Streamlit para OCR de Documentos (RG, CNH, etc.)
 Permite upload de PDF, PNG, JPG, extrai texto com Tesseract OCR,
 e utiliza a API do Google Gemini para extrair dados estruturados.
-(v1.2 - Usando genai.Client e modelo gemini-1.5-flash-latest)
+(v1.3 - Corrigido para usar genai.configure e genai.GenerativeModel)
 """
 
 # 1. Imports necessários
@@ -36,6 +36,7 @@ def perform_ocr(file_bytes, file_type):
     Realiza OCR nos bytes de uma imagem ou PDF.
     (Função original com pequenas melhorias no tratamento de erro)
     """
+    # ... (código da função perform_ocr como na v1.2) ...
     extracted_text = ""
     display_image = None
     images_to_process = []
@@ -126,11 +127,12 @@ def perform_ocr(file_bytes, file_type):
         return display_image if 'display_image' in locals() else None, None
 
 
-# 3. Função para Análise Estruturada com API Gemini (Usando genai.Client)
+# 3. Função para Análise Estruturada com API Gemini (Usando configure/GenerativeModel)
+#    *** CÓDIGO CORRIGIDO CONFORME SUGESTÃO DO USUÁRIO ***
 def analyze_text_with_ai(text, api_key):
     """
     Analisa o texto OCR usando a API do Google Gemini para extrair dados,
-    utilizando o padrão genai.Client.
+    utilizando genai.configure() e genai.GenerativeModel().
 
     Args:
         text (str): O texto extraído pelo OCR.
@@ -140,7 +142,7 @@ def analyze_text_with_ai(text, api_key):
         dict: Um dicionário com os dados estruturados encontrados ou um erro.
     """
     if not genai or not google:
-         return {"Erro": "Biblioteca 'google-generativeai' não está instalada ou não pôde ser importada."}
+        return {"Erro": "Biblioteca 'google-generativeai' não está instalada ou não pôde ser importada."}
 
     if not api_key:
         return {"Erro": "Chave da API do Gemini não fornecida."}
@@ -148,16 +150,14 @@ def analyze_text_with_ai(text, api_key):
     if not text or not isinstance(text, str) or len(text.strip()) < 10:
         return {"Erro": "Texto de entrada inválido ou muito curto para análise."}
 
-    # --- Cria o Cliente Gemini ---
+    # --- Configura a API ---
     try:
-        # Não usamos mais genai.configure, inicializamos o cliente diretamente
-        client = genai.Client(api_key=api_key)
-    except Exception as client_err:
-        st.error(f"Erro ao criar o cliente Gemini com a API Key: {client_err}")
-        return {"Erro": f"Falha ao inicializar cliente Gemini: {client_err}"}
+        genai.configure(api_key=api_key)
+    except Exception as config_err:
+        st.error(f"Erro ao configurar a API Gemini: {config_err}")
+        return {"Erro": f"Falha ao configurar API Gemini: {config_err}"}
 
     # --- Prompt para o LLM ---
-    # (O mesmo prompt detalhado de antes)
     prompt = f"""
     Analise o seguinte texto extraído de um documento de identidade brasileiro (como RG ou CNH)
     e retorne as informações estruturadas **estritamente em formato JSON**. Procure pelos seguintes campos:
@@ -183,36 +183,36 @@ def analyze_text_with_ai(text, api_key):
     """
 
     # --- Define o nome do modelo ---
-    # Usando um modelo mais recente e geralmente disponível
-    model_name = "models/gemini-1.5-flash-latest"
-    # model_name = "models/gemini-pro" # Alternativa se o flash não funcionar
+    # Usando um modelo mais recente ou 'gemini-pro' como alternativa estável
+    model_name = "gemini-1.5-flash-latest"
+    # model_name = "gemini-pro" # Alternativa
 
-    # --- Chama a API usando o cliente ---
+    # --- Chama a API usando GenerativeModel ---
     try:
         st.info(f"Enviando solicitação para a API Gemini (modelo: {model_name})...")
-        # Usa client.generate_content com o parâmetro 'contents'
-        response = client.generate_content(
-            model=model_name, # Especifica o modelo aqui
-            contents=prompt   # Passa o prompt como 'contents'
-            # generation_config pode ser adicionado aqui se suportado por este método
-        )
+        # Cria a instância do modelo AQUI, após configurar a API Key
+        model = genai.GenerativeModel(model_name)
+        response = model.generate_content(prompt)
         st.info("Resposta recebida da API Gemini.")
 
-        # Tenta extrair e limpar a resposta JSON
-        # A estrutura da resposta pode ser ligeiramente diferente com client.generate_content
-        # Geralmente ainda está em response.text ou pode estar em response.candidates[0].content.parts[0].text
+        # Extrai a resposta como texto
+        # A estrutura da resposta com GenerativeModel geralmente está em response.text
         response_text = ""
         if hasattr(response, 'text'):
              response_text = response.text
         elif response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+             # Fallback se a estrutura for diferente (menos comum para generate_content simples)
              response_text = response.candidates[0].content.parts[0].text
         else:
-             # Estrutura de resposta inesperada
              st.warning("Estrutura de resposta da API Gemini inesperada.")
-             st.json(response) # Mostra a resposta completa para depuração
+             # Tenta mostrar a resposta completa para depuração, se possível
+             try:
+                 st.json(response)
+             except: # Se a resposta não for serializável
+                 st.text(str(response))
              return {"Erro": "Estrutura de resposta da API inesperada."}
 
-
+        # Limpa formatação markdown se presente
         response_text = re.sub(r'^```json\s*', '', response_text.strip(), flags=re.IGNORECASE)
         response_text = re.sub(r'\s*```$', '', response_text.strip())
 
@@ -225,30 +225,30 @@ def analyze_text_with_ai(text, api_key):
         st.text("Resposta recebida da API (pode não ser JSON válido):")
         st.code(response_text if 'response_text' in locals() and response_text else "Nenhuma resposta de texto capturada", language=None)
         return {"Erro": f"Falha ao processar JSON da API. Verifique a resposta acima."}
-    # Captura erros específicos da API do Google
     except google.api_core.exceptions.GoogleAPIError as api_err:
-         st.error(f"Erro na API Google durante a chamada: {api_err}")
-         error_details = f"Código: {getattr(api_err, 'code', 'N/A')}, Mensagem: {getattr(api_err, 'message', str(api_err))}"
-         if hasattr(api_err, 'details'):
-              error_details += f", Detalhes: {api_err.details}"
+        st.error(f"Erro na API Google durante a chamada: {api_err}")
+        error_details = f"Código: {getattr(api_err, 'code', 'N/A')}, Mensagem: {getattr(api_err, 'message', str(api_err))}"
+        if hasattr(api_err, 'details'):
+            error_details += f", Detalhes: {api_err.details}"
 
-         if isinstance(api_err, google.api_core.exceptions.NotFound):
-              st.warning(f"Erro 404: O modelo '{model_name}' não foi encontrado ou não está acessível.")
-         elif isinstance(api_err, google.api_core.exceptions.PermissionDenied):
-              st.warning(f"Erro de Permissão (403): Verifique se sua API Key está ativa e tem permissão para usar o modelo '{model_name}'.")
-         elif isinstance(api_err, google.api_core.exceptions.InvalidArgument):
-              st.warning(f"Erro de Argumento Inválido (400): {api_err.message}. Verifique o prompt.")
-         elif isinstance(api_err, google.api_core.exceptions.ResourceExhausted):
-              st.warning(f"Erro de Cota Excedida (429): Você pode ter excedido os limites de uso da API. Tente novamente mais tarde.")
+        if isinstance(api_err, google.api_core.exceptions.NotFound):
+            st.warning(f"Erro 404: O modelo '{model_name}' não foi encontrado ou não está acessível com sua API Key.")
+        elif isinstance(api_err, google.api_core.exceptions.PermissionDenied):
+            st.warning(f"Erro de Permissão (403): Verifique se sua API Key está ativa e tem permissão para usar o modelo '{model_name}'.")
+        elif isinstance(api_err, google.api_core.exceptions.InvalidArgument):
+            st.warning(f"Erro de Argumento Inválido (400): {api_err.message}. Verifique o prompt ou se o modelo suporta o tipo de conteúdo.")
+            # Adiciona verificação específica para InvalidArgument relacionado ao modelo
+            if 'model' in str(api_err).lower() and 'does not support' in str(api_err).lower():
+                 st.info(f"O modelo '{model_name}' pode não suportar generateContent diretamente desta forma ou com este tipo de prompt. Considere testar com 'gemini-pro'.")
+        elif isinstance(api_err, google.api_core.exceptions.ResourceExhausted):
+            st.warning(f"Erro de Cota Excedida (429): Você pode ter excedido os limites de uso da API. Tente novamente mais tarde.")
 
-
-         return {"Erro": f"Erro na API Google: {error_details}"}
+        return {"Erro": f"Erro na API Google: {error_details}"}
     except Exception as generic_api_err:
         st.error(f"Erro genérico durante a chamada à API do Gemini: {generic_api_err}")
         error_details = str(generic_api_err)
-        # Tenta obter feedback do prompt se a resposta foi parcialmente formada
         if 'response' in locals() and hasattr(response, 'prompt_feedback'):
-             error_details += f" | Feedback do Prompt: {response.prompt_feedback}"
+            error_details += f" | Feedback do Prompt: {response.prompt_feedback}"
         return {"Erro": f"Erro na API Gemini: {error_details}"}
 
 
@@ -323,7 +323,8 @@ if uploaded_file and uploaded_file.name != st.session_state.get('last_uploaded_f
     st.session_state.ocr_text = None
     st.session_state.structured_data = None
     st.session_state.last_uploaded_filename = uploaded_file.name
-    st.info(f"Novo arquivo detectado: {uploaded_file.name}. Estados anteriores resetados.")
+    # st.info(f"Novo arquivo detectado: {uploaded_file.name}. Estados anteriores resetados.") # Opcional: Mostrar mensagem de reset
+
 
 if uploaded_file is not None:
     file_bytes = uploaded_file.getvalue()
@@ -337,7 +338,7 @@ if uploaded_file is not None:
 
     with col1:
         st.subheader("Visualização Prévia")
-        # ... (código de visualização inalterado) ...
+        # ... (código de visualização inalterado da v1.2) ...
         try:
             if file_type in ['image/png', 'image/jpeg', 'image/jpg']:
                 image = Image.open(io.BytesIO(file_bytes))
@@ -388,19 +389,15 @@ if uploaded_file is not None:
                  st.warning("Por favor, insira sua chave da API Gemini na barra lateral.")
             elif st.session_state.ocr_text is None:
                  st.warning("Execute o OCR primeiro (Botão 1).")
-            # elif not st.session_state.ocr_text.strip() and st.session_state.ocr_text is not None:
-            #      st.warning("O OCR não detectou texto. A análise da API provavelmente falhará ou retornará vazio.")
-            #      # Permite continuar para testar a chamada da API mesmo assim
-            #      with st.spinner("Chamando API Gemini para análise (com texto vazio)..."):
-            #          analysis_result = analyze_text_with_ai(st.session_state.ocr_text, api_key_input)
-            #          st.session_state.structured_data = analysis_result
             else:
                  # Caso normal (inclui texto vazio, a função analyze_text_with_ai trata isso)
                  st.session_state.structured_data = None
                  with st.spinner("Chamando API Gemini para análise..."):
+                     # Chama a função analyze_text_with_ai CORRIGIDA
                      analysis_result = analyze_text_with_ai(st.session_state.ocr_text, api_key_input)
                      st.session_state.structured_data = analysis_result
                      if isinstance(analysis_result, dict) and "Erro" in analysis_result:
+                          # Erros já são mostrados dentro da função analyze_text_with_ai
                           st.error("Falha na análise com Gemini. Verifique os erros acima e sua API Key.")
                      else:
                           st.success("Análise com Gemini concluída!")
@@ -429,6 +426,7 @@ if uploaded_file is not None:
         if isinstance(st.session_state.structured_data, dict) and "Erro" in st.session_state.structured_data:
              pass # Erro já tratado visualmente
         elif isinstance(st.session_state.structured_data, dict):
+            # ... (código de exibição dos dados como na v1.2) ...
             data_map = {
                 "data_nascimento": "Data de Nascimento",
                 "local_nascimento": "Local de Nascimento",
@@ -465,4 +463,3 @@ else:
 
 st.write("---")
 st.caption("Observação: A precisão do OCR e da análise depende da qualidade do documento e da resposta da API Gemini.")
-
