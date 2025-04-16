@@ -385,6 +385,7 @@ if uploaded_file is not None:
              pass # Erro já tratado visualmente
         elif isinstance(st.session_state.structured_data, dict):
             data_map = {
+                "nome": "Nome e Sobrenome",
                 "data_nascimento": "Data de Nascimento",
                 "local_nascimento": "Local de Nascimento",
                 "doc_identidade": "Documento de Identidade",
