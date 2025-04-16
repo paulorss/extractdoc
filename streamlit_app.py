@@ -307,7 +307,7 @@ if uploaded_file is not None:
                 try:
                     preview_images = convert_from_bytes(file_bytes, dpi=150, first_page=1, last_page=1)
                     if preview_images:
-                        st.image(preview_images[0], caption='Primeira Página do PDF', use_column_width='auto')
+                        st.image(preview_images[0], caption='Primeira Página do PDF', use_container_width='auto')
                     else:
                         st.warning("Não foi possível gerar a visualização do PDF (pdf2image retornou vazio).")
                 except Exception as pdf_prev_err:
