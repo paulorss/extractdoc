@@ -256,7 +256,7 @@ st.sidebar.subheader("Chave da API Google Gemini")
 api_key_input = st.sidebar.text_input(
     "Insira sua API Key:",
     type="password",
-    help="Sua chave da API do Google Gemini."
+    help="Sua chave da API do Google Gemini.")
 
 
 
