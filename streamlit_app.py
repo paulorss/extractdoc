@@ -3,6 +3,7 @@
 Aplicativo Streamlit para OCR de Documentos (RG, CNH, etc.)
 Permite upload de PDF, PNG, JPG, extrai texto com Tesseract OCR,
 e utiliza a API do Google Gemini para extrair dados estruturados.
+(v1.2 - Usando genai.Client e modelo gemini-1.5-flash-latest)
 """
 
 # 1. Imports necessários
@@ -18,22 +19,23 @@ import json # Para processar a resposta da API
 # Tenta importar a biblioteca do Google Gemini
 try:
     import google.generativeai as genai
+    import google.api_core.exceptions # Para capturar erros específicos da API
 except ImportError:
     st.error("Biblioteca 'google-generativeai' não encontrada. Instale-a com 'pip install google-generativeai' e adicione ao requirements.txt.")
     # Adiciona um placeholder para evitar erros posteriores se a importação falhar
     genai = None
+    google = None # Placeholder para api_core
 
 # --- Configuração do Tesseract ---
 # (Mesma configuração de antes)
 # --- Fim da Configuração do Tesseract ---
 
-# 2. Função para realizar OCR (sem alterações)
+# 2. Função para realizar OCR (sem alterações significativas)
 def perform_ocr(file_bytes, file_type):
     """
     Realiza OCR nos bytes de uma imagem ou PDF.
-    (Função original sem modificações)
+    (Função original com pequenas melhorias no tratamento de erro)
     """
-    # ... (código da função perform_ocr inalterado) ...
     extracted_text = ""
     display_image = None
     images_to_process = []
@@ -42,21 +44,37 @@ def perform_ocr(file_bytes, file_type):
         # Processa imagens PNG ou JPEG
         if file_type in ['image/png', 'image/jpeg', 'image/jpg']:
             image = Image.open(io.BytesIO(file_bytes))
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
+            # Converte para RGB para evitar potenciais problemas com Tesseract
+            if image.mode == 'RGBA':
+                 image = image.convert('RGB')
+            elif image.mode == 'P': # Paleta
+                 image = image.convert('RGB')
+            elif image.mode == 'L': # Grayscale
+                 image = image.convert('RGB') # Tesseract geralmente prefere RGB ou Grayscale
+
             images_to_process.append(image)
             display_image = image
 
         # Processa arquivos PDF
         elif file_type == 'application/pdf':
             st.info("Convertendo PDF para imagens...")
-            pdf_images = convert_from_bytes(file_bytes, dpi=300)
-            if pdf_images:
-                images_to_process.extend(pdf_images)
-                display_image = pdf_images[0]
-            else:
-                st.warning("Não foi possível extrair imagens do PDF.")
-                return None, None
+            try:
+                # Usa poppler_path se necessário em ambientes específicos (geralmente não no Cloud com packages.txt)
+                # poppler_path = None # Defina se necessário
+                pdf_images = convert_from_bytes(file_bytes, dpi=300)#, poppler_path=poppler_path)
+                if pdf_images:
+                    images_to_process.extend(pdf_images)
+                    display_image = pdf_images[0]
+                else:
+                    st.warning("Não foi possível extrair imagens do PDF (pdf2image retornou lista vazia).")
+                    return None, None
+            except Exception as pdf_err:
+                 if 'poppler' in str(pdf_err).lower() or 'unable to get page count' in str(pdf_err).lower():
+                      st.error("Erro ao converter PDF: Dependência 'poppler' não encontrada ou não está no PATH.")
+                      st.info("Verifique a instalação do 'poppler-utils' (via packages.txt no Streamlit Cloud).")
+                 else:
+                      st.error(f"Erro inesperado ao converter PDF: {pdf_err}")
+                 return None, None
         else:
             st.error(f"Tipo de arquivo não suportado: {file_type}")
             return None, None
@@ -70,11 +88,17 @@ def perform_ocr(file_bytes, file_type):
         full_text_list = []
         for i, img in enumerate(images_to_process):
              try:
-                 text = pytesseract.image_to_string(img, lang='por')
+                 # Configuração Tesseract: --psm 6 assume um bloco de texto uniforme.
+                 # Para documentos com layout variado, --psm 3 (Auto Page Segmentation) ou --psm 4 (Assume single column) podem ser melhores. Testar!
+                 custom_config = r'--oem 3 --psm 4 -l por' # Tentando PSM 4
+                 text = pytesseract.image_to_string(img, config=custom_config)
                  if len(images_to_process) > 1:
                      full_text_list.append(f"--- Página {i+1} ---\n{text}")
                  else:
                      full_text_list.append(text)
+             except pytesseract.TesseractNotFoundError:
+                  st.error("Erro Crítico: Tesseract não encontrado. Verifique a instalação e o PATH.")
+                  return None, None
              except pytesseract.TesseractError as tess_err:
                  st.error(f"Erro do Tesseract na imagem {i+1}: {tess_err}")
                  full_text_list.append(f"--- Página {i+1}: Erro no OCR ---")
@@ -85,27 +109,28 @@ def perform_ocr(file_bytes, file_type):
         extracted_text = "\n\n".join(full_text_list)
         return display_image, extracted_text.strip()
 
-    # Tratamento de erros (sem alterações)
+    # Tratamento de erros gerais
     except ImportError as import_err:
         if 'pdf2image' in str(import_err) or 'poppler' in str(import_err):
              st.error("Erro: A biblioteca 'pdf2image' ou sua dependência 'poppler' não foi encontrada.")
              st.info("Para rodar localmente, instale o Poppler. Para deploy no Streamlit Cloud, adicione 'poppler-utils' ao seu 'packages.txt'.")
         else:
-             st.error(f"Erro de importação: {import_err}")
+             st.error(f"Erro de importação não relacionado ao pdf2image: {import_err}")
         return None, None
     except pytesseract.TesseractNotFoundError:
         st.error("Erro Crítico: O executável do Tesseract OCR não foi encontrado.")
-        st.info("No Streamlit Cloud, adicione 'tesseract-ocr' e 'tesseract-ocr-por' ao seu 'packages.txt'.")
+        st.info("Verifique a instalação do Tesseract e se ele está no PATH do sistema.")
         return None, None
     except Exception as e:
         st.error(f"Ocorreu um erro inesperado durante o processamento OCR: {e}")
         return display_image if 'display_image' in locals() else None, None
 
 
-# 3. Função para Análise Estruturada com API Gemini
+# 3. Função para Análise Estruturada com API Gemini (Usando genai.Client)
 def analyze_text_with_ai(text, api_key):
     """
-    Analisa o texto OCR usando a API do Google Gemini para extrair dados.
+    Analisa o texto OCR usando a API do Google Gemini para extrair dados,
+    utilizando o padrão genai.Client.
 
     Args:
         text (str): O texto extraído pelo OCR.
@@ -114,24 +139,25 @@ def analyze_text_with_ai(text, api_key):
     Returns:
         dict: Um dicionário com os dados estruturados encontrados ou um erro.
     """
-    if not genai:
+    if not genai or not google:
          return {"Erro": "Biblioteca 'google-generativeai' não está instalada ou não pôde ser importada."}
 
     if not api_key:
         return {"Erro": "Chave da API do Gemini não fornecida."}
 
-    if not text or not isinstance(text, str):
-        return {"Erro": "Texto de entrada inválido para análise."}
+    if not text or not isinstance(text, str) or len(text.strip()) < 10:
+        return {"Erro": "Texto de entrada inválido ou muito curto para análise."}
 
-    # Configura a API Key
+    # --- Cria o Cliente Gemini ---
     try:
-        genai.configure(api_key=api_key)
-    except Exception as config_err:
-        st.error(f"Erro ao configurar a API Key do Gemini: {config_err}")
-        return {"Erro": f"Falha na configuração da API Key: {config_err}"}
+        # Não usamos mais genai.configure, inicializamos o cliente diretamente
+        client = genai.Client(api_key=api_key)
+    except Exception as client_err:
+        st.error(f"Erro ao criar o cliente Gemini com a API Key: {client_err}")
+        return {"Erro": f"Falha ao inicializar cliente Gemini: {client_err}"}
 
     # --- Prompt para o LLM ---
-    # (O mesmo prompt de antes, instruindo a retornar JSON)
+    # (O mesmo prompt detalhado de antes)
     prompt = f"""
     Analise o seguinte texto extraído de um documento de identidade brasileiro (como RG ou CNH)
     e retorne as informações estruturadas **estritamente em formato JSON**. Procure pelos seguintes campos:
@@ -156,28 +182,37 @@ def analyze_text_with_ai(text, api_key):
     JSON esperado:
     """
 
-    # Configurações de geração (opcional, pode ajustar)
-    generation_config = {
-        "temperature": 0.2, # Baixa temperatura para respostas mais determinísticas
-        "top_p": 1,
-        "top_k": 1,
-        # "response_mime_type": "application/json", # Funciona melhor com modelos mais recentes (ex: gemini-1.5-pro)
-    }
+    # --- Define o nome do modelo ---
+    # Usando um modelo mais recente e geralmente disponível
+    model_name = "models/gemini-1.5-flash-latest"
+    # model_name = "models/gemini-pro" # Alternativa se o flash não funcionar
 
-    # Cria o modelo
-    model = genai.GenerativeModel(
-        model_name="gemini-pro", # Modelo padrão robusto
-        generation_config=generation_config
-        # safety_settings=... # Pode adicionar configurações de segurança se necessário
-        )
-
-    # Chama a API
+    # --- Chama a API usando o cliente ---
     try:
-        response = model.generate_content(prompt)
+        st.info(f"Enviando solicitação para a API Gemini (modelo: {model_name})...")
+        # Usa client.generate_content com o parâmetro 'contents'
+        response = client.generate_content(
+            model=model_name, # Especifica o modelo aqui
+            contents=prompt   # Passa o prompt como 'contents'
+            # generation_config pode ser adicionado aqui se suportado por este método
+        )
+        st.info("Resposta recebida da API Gemini.")
 
         # Tenta extrair e limpar a resposta JSON
-        response_text = response.text
-        # Remove possíveis blocos de código markdown ```json ... ```
+        # A estrutura da resposta pode ser ligeiramente diferente com client.generate_content
+        # Geralmente ainda está em response.text ou pode estar em response.candidates[0].content.parts[0].text
+        response_text = ""
+        if hasattr(response, 'text'):
+             response_text = response.text
+        elif response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+             response_text = response.candidates[0].content.parts[0].text
+        else:
+             # Estrutura de resposta inesperada
+             st.warning("Estrutura de resposta da API Gemini inesperada.")
+             st.json(response) # Mostra a resposta completa para depuração
+             return {"Erro": "Estrutura de resposta da API inesperada."}
+
+
         response_text = re.sub(r'^```json\s*', '', response_text.strip(), flags=re.IGNORECASE)
         response_text = re.sub(r'\s*```$', '', response_text.strip())
 
@@ -187,30 +222,47 @@ def analyze_text_with_ai(text, api_key):
 
     except json.JSONDecodeError as json_err:
         st.error(f"Erro ao decodificar a resposta JSON da API: {json_err}")
-        st.text("Resposta recebida da API:")
-        st.code(response.text, language=None) # Mostra a resposta bruta
-        return {"Erro": f"Falha ao processar JSON da API. Resposta: {response.text}"}
-    except Exception as api_err:
-        st.error(f"Erro durante a chamada à API do Gemini: {api_err}")
-        # Tenta capturar informações de erro da resposta, se disponíveis
-        error_details = getattr(response, 'prompt_feedback', str(api_err))
+        st.text("Resposta recebida da API (pode não ser JSON válido):")
+        st.code(response_text if 'response_text' in locals() and response_text else "Nenhuma resposta de texto capturada", language=None)
+        return {"Erro": f"Falha ao processar JSON da API. Verifique a resposta acima."}
+    # Captura erros específicos da API do Google
+    except google.api_core.exceptions.GoogleAPIError as api_err:
+         st.error(f"Erro na API Google durante a chamada: {api_err}")
+         error_details = f"Código: {getattr(api_err, 'code', 'N/A')}, Mensagem: {getattr(api_err, 'message', str(api_err))}"
+         if hasattr(api_err, 'details'):
+              error_details += f", Detalhes: {api_err.details}"
+
+         if isinstance(api_err, google.api_core.exceptions.NotFound):
+              st.warning(f"Erro 404: O modelo '{model_name}' não foi encontrado ou não está acessível.")
+         elif isinstance(api_err, google.api_core.exceptions.PermissionDenied):
+              st.warning(f"Erro de Permissão (403): Verifique se sua API Key está ativa e tem permissão para usar o modelo '{model_name}'.")
+         elif isinstance(api_err, google.api_core.exceptions.InvalidArgument):
+              st.warning(f"Erro de Argumento Inválido (400): {api_err.message}. Verifique o prompt.")
+         elif isinstance(api_err, google.api_core.exceptions.ResourceExhausted):
+              st.warning(f"Erro de Cota Excedida (429): Você pode ter excedido os limites de uso da API. Tente novamente mais tarde.")
+
+
+         return {"Erro": f"Erro na API Google: {error_details}"}
+    except Exception as generic_api_err:
+        st.error(f"Erro genérico durante a chamada à API do Gemini: {generic_api_err}")
+        error_details = str(generic_api_err)
+        # Tenta obter feedback do prompt se a resposta foi parcialmente formada
+        if 'response' in locals() and hasattr(response, 'prompt_feedback'):
+             error_details += f" | Feedback do Prompt: {response.prompt_feedback}"
         return {"Erro": f"Erro na API Gemini: {error_details}"}
 
 
-# 4. Interface do Aplicativo Streamlit (Atualizada)
+# 4. Interface do Aplicativo Streamlit (sem alterações na UI principal)
 st.set_page_config(layout="wide", page_title="OCR e Análise Gemini")
 
 # --- Sidebar ---
 st.sidebar.title("Configurações")
-
-# Entrada da API Key
 st.sidebar.subheader("Chave da API Google Gemini")
 api_key_input = st.sidebar.text_input(
     "Insira sua API Key:",
     type="password",
     help="Sua chave da API do Google Gemini."
 )
-
 st.sidebar.warning(
     """
     ⚠️ **Aviso de Segurança:** Inserir a chave aqui é **inseguro** para apps compartilhados.
@@ -218,9 +270,6 @@ st.sidebar.warning(
     """
 )
 st.sidebar.markdown("[Obtenha uma chave de API aqui](https://aistudio.google.com/app/apikey)")
-
-
-# Instruções de Deploy Atualizadas
 st.sidebar.title("Notas de Deploy (Streamlit Cloud)")
 st.sidebar.info(
     """
@@ -244,7 +293,7 @@ st.sidebar.info(
 
     3.  **Configure a API Key (RECOMENDADO):**
         * Adicione sua chave da API do Google Gemini aos **Secrets** do seu aplicativo no Streamlit Cloud com o nome `GOOGLE_API_KEY`.
-        * No código, você pode acessá-la com `st.secrets["GOOGLE_API_KEY"]` em vez de usar o input manual. **Adapte o código se for usar Secrets!**
+        * **Adapte o código:** Remova o input manual e leia a chave com `api_key = st.secrets["GOOGLE_API_KEY"]` no início da função `analyze_text_with_ai`.
 
     4.  Faça o upload dos arquivos para um repositório GitHub e conecte ao Streamlit Cloud.
     """
@@ -256,20 +305,26 @@ st.sidebar.markdown("Desenvolvido com Streamlit, Tesseract OCR e Google Gemini."
 st.title("🔍 Aplicativo OCR com Análise via Google Gemini")
 st.markdown("Faça upload de um arquivo (`PDF`, `PNG`, `JPG`), extraia o texto e use a API Gemini para obter dados estruturados.")
 
-# Componente de upload de arquivo
 uploaded_file = st.file_uploader(
     "Selecione o arquivo do documento",
     type=['pdf', 'png', 'jpg', 'jpeg'],
-    help="Arraste e solte ou clique para selecionar."
+    help="Arraste e solte ou clique para selecionar.",
+    key="file_uploader"
 )
 
-# Variáveis de estado da sessão
 if 'ocr_text' not in st.session_state:
     st.session_state.ocr_text = None
 if 'structured_data' not in st.session_state:
     st.session_state.structured_data = None
+if 'last_uploaded_filename' not in st.session_state:
+     st.session_state.last_uploaded_filename = None
 
-# Processamento após o upload
+if uploaded_file and uploaded_file.name != st.session_state.get('last_uploaded_filename'):
+    st.session_state.ocr_text = None
+    st.session_state.structured_data = None
+    st.session_state.last_uploaded_filename = uploaded_file.name
+    st.info(f"Novo arquivo detectado: {uploaded_file.name}. Estados anteriores resetados.")
+
 if uploaded_file is not None:
     file_bytes = uploaded_file.getvalue()
     file_type = uploaded_file.type
@@ -283,25 +338,27 @@ if uploaded_file is not None:
     with col1:
         st.subheader("Visualização Prévia")
         # ... (código de visualização inalterado) ...
-        display_image_ocr = None
         try:
             if file_type in ['image/png', 'image/jpeg', 'image/jpg']:
                 image = Image.open(io.BytesIO(file_bytes))
                 st.image(image, caption='Imagem Carregada', use_column_width='auto')
-                display_image_ocr = image
             elif file_type == 'application/pdf':
                 st.info("Exibindo a primeira página do PDF...")
-                preview_images = convert_from_bytes(file_bytes, dpi=150, first_page=1, last_page=1)
-                if preview_images:
-                    st.image(preview_images[0], caption='Primeira Página do PDF', use_column_width='auto')
-                else:
-                    st.warning("Não foi possível gerar a visualização do PDF.")
+                try:
+                    preview_images = convert_from_bytes(file_bytes, dpi=150, first_page=1, last_page=1)
+                    if preview_images:
+                        st.image(preview_images[0], caption='Primeira Página do PDF', use_column_width='auto')
+                    else:
+                        st.warning("Não foi possível gerar a visualização do PDF (pdf2image retornou vazio).")
+                except Exception as pdf_prev_err:
+                     if 'poppler' in str(pdf_prev_err).lower():
+                          st.error("Erro na visualização do PDF: 'poppler' não encontrado.")
+                     else:
+                          st.error(f"Erro ao gerar pré-visualização do PDF: {pdf_prev_err}")
             else:
-                st.warning("Visualização não disponível.")
-        except ImportError:
-             st.error("Erro ao gerar visualização do PDF: 'poppler' não encontrado.")
+                st.warning("Visualização não disponível para este tipo de arquivo.")
         except Exception as e:
-            st.error(f"Erro ao carregar visualização: {e}")
+            st.error(f"Erro inesperado ao carregar visualização: {e}")
 
 
     with col2:
@@ -313,50 +370,65 @@ if uploaded_file is not None:
             with st.spinner('Processando OCR...'):
                 _, ocr_result = perform_ocr(file_bytes, file_type)
                 if ocr_result is not None:
-                     st.session_state.ocr_text = ocr_result
-                     st.success("OCR Concluído!")
+                     if ocr_result.strip():
+                          st.session_state.ocr_text = ocr_result
+                          st.success("OCR Concluído!")
+                     else:
+                          st.warning("OCR concluído, mas nenhum texto foi detectado.")
+                          st.session_state.ocr_text = ""
                 else:
-                     st.error("Falha no OCR.")
+                     st.error("Falha no processo de OCR.")
 
-        # Botão Análise Gemini (requer OCR e API Key)
-        analysis_possible = st.session_state.ocr_text and api_key_input
+        # Botão Análise Gemini
+        analysis_possible = st.session_state.ocr_text is not None and api_key_input
         analyze_button_disabled = not analysis_possible
 
         if st.button("2. Analisar Dados (Gemini API)", key="analyze_button", disabled=analyze_button_disabled):
             if not api_key_input:
                  st.warning("Por favor, insira sua chave da API Gemini na barra lateral.")
-            elif not st.session_state.ocr_text:
+            elif st.session_state.ocr_text is None:
                  st.warning("Execute o OCR primeiro (Botão 1).")
+            # elif not st.session_state.ocr_text.strip() and st.session_state.ocr_text is not None:
+            #      st.warning("O OCR não detectou texto. A análise da API provavelmente falhará ou retornará vazio.")
+            #      # Permite continuar para testar a chamada da API mesmo assim
+            #      with st.spinner("Chamando API Gemini para análise (com texto vazio)..."):
+            #          analysis_result = analyze_text_with_ai(st.session_state.ocr_text, api_key_input)
+            #          st.session_state.structured_data = analysis_result
             else:
+                 # Caso normal (inclui texto vazio, a função analyze_text_with_ai trata isso)
                  st.session_state.structured_data = None
                  with st.spinner("Chamando API Gemini para análise..."):
-                     # Chama a função de análise com a chave fornecida
                      analysis_result = analyze_text_with_ai(st.session_state.ocr_text, api_key_input)
                      st.session_state.structured_data = analysis_result
-                     if "Erro" not in analysis_result:
-                         st.success("Análise com Gemini concluída!")
+                     if isinstance(analysis_result, dict) and "Erro" in analysis_result:
+                          st.error("Falha na análise com Gemini. Verifique os erros acima e sua API Key.")
                      else:
-                         # Erros já são mostrados dentro da função analyze_text_with_ai
-                         st.error("Falha na análise com Gemini. Verifique os erros acima e sua API Key.")
-        elif not analyze_button_disabled and not st.session_state.ocr_text:
-             st.info("Execute o passo 1 (OCR) primeiro.")
-        elif not analyze_button_disabled and not api_key_input:
-             st.info("Insira sua API Key na barra lateral para habilitar a análise.")
+                          st.success("Análise com Gemini concluída!")
+
+        # Mensagens de ajuda para o botão desabilitado
+        elif analyze_button_disabled:
+             if not api_key_input:
+                  st.info("Insira sua API Key na barra lateral para habilitar a análise.")
+             elif st.session_state.ocr_text is None:
+                  st.info("Execute o passo 1 (OCR) primeiro.")
 
 
     # Exibição dos resultados
     st.write("---")
 
-    if st.session_state.ocr_text:
+    if st.session_state.ocr_text is not None:
         st.subheader("Texto Extraído via OCR")
-        st.text_area("Resultado do OCR:", st.session_state.ocr_text, height=250)
+        st.text_area(
+             "Resultado do OCR:",
+             st.session_state.ocr_text if st.session_state.ocr_text.strip() else "[Nenhum texto detectado pelo OCR]",
+             height=250
+        )
 
-    if st.session_state.structured_data:
+    if st.session_state.structured_data is not None:
         st.subheader("Dados Estruturados (Análise Gemini API)")
-
-        if "Erro" in st.session_state.structured_data:
-             st.error(f"Erro na análise: {st.session_state.structured_data['Erro']}")
-        else:
+        if isinstance(st.session_state.structured_data, dict) and "Erro" in st.session_state.structured_data:
+             pass # Erro já tratado visualmente
+        elif isinstance(st.session_state.structured_data, dict):
             data_map = {
                 "data_nascimento": "Data de Nascimento",
                 "local_nascimento": "Local de Nascimento",
@@ -371,20 +443,22 @@ if uploaded_file is not None:
             found_count = 0
             for key, value in st.session_state.structured_data.items():
                 display_name = data_map.get(key, key.replace("_", " ").title())
-                if value: # Só mostra se tiver valor e não for explicitamente null/None
-                    st.info(f"**{display_name}:** {value}")
-                    found_count += 1
+                st.info(f"**{display_name}:** {value if value is not None else 'Não encontrado/Nulo'}")
+                if value:
+                     found_count += 1
 
-            if found_count == 0:
-                 st.warning("A API Gemini não retornou nenhum dos campos esperados com valor preenchido.")
+            if found_count == 0 and not ("Erro" in st.session_state.structured_data):
+                 st.warning("A API Gemini processou o texto, mas não retornou valores preenchidos para os campos esperados.")
 
-            # Verifica campos que a API pode não ter retornado
             expected_keys = data_map.keys()
             returned_keys = st.session_state.structured_data.keys()
             missing_keys = [data_map[k] for k in expected_keys if k not in returned_keys]
             if missing_keys:
-                st.markdown(f"**Campos não retornados pela API:** {', '.join(missing_keys)}")
-
+                st.markdown(f"**Campos não retornados pela API (chave ausente):** {', '.join(missing_keys)}")
+        else:
+            st.error("A resposta da análise da API não foi um dicionário JSON válido.")
+            st.text("Resposta recebida:")
+            st.code(str(st.session_state.structured_data), language=None)
 
 else:
     st.info("Aguardando o upload de um arquivo PDF, PNG ou JPG.")
