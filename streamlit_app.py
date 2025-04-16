@@ -155,6 +155,7 @@ def analyze_text_with_ai(text, api_key):
     prompt = f"""
     Analise o seguinte texto extraído de um documento de identidade brasileiro (como RG ou CNH)
     e retorne as informações estruturadas **estritamente em formato JSON**. Procure pelos seguintes campos:
+    - nome (Nome completo)
     - data_nascimento (Formato DD/MM/AAAA)
     - local_nascimento (Cidade e UF, ex: Goiânia-GO)
     - doc_identidade (Número do RG ou CNH)
