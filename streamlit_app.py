@@ -257,44 +257,8 @@ api_key_input = st.sidebar.text_input(
     "Insira sua API Key:",
     type="password",
     help="Sua chave da API do Google Gemini."
-)
-st.sidebar.warning(
-    """
-    ⚠️ **Aviso de Segurança:** Inserir a chave aqui é **inseguro** para apps compartilhados.
-    Para deploy no Streamlit Cloud, use os **Secrets**!
-    """
-)
-st.sidebar.markdown("[Obtenha uma chave de API aqui](https://aistudio.google.com/app/apikey)")
-st.sidebar.title("Notas de Deploy (Streamlit Cloud)")
-st.sidebar.info(
-    """
-    Para fazer o deploy deste aplicativo no Streamlit Cloud:
 
-    1.  **Crie um arquivo `requirements.txt`:**
-        ```
-        streamlit
-        pillow
-        pytesseract
-        pdf2image
-        google-generativeai
-        ```
 
-    2.  **Crie um arquivo `packages.txt`:**
-        ```
-        tesseract-ocr
-        tesseract-ocr-por
-        poppler-utils
-        ```
-
-    3.  **Configure a API Key (RECOMENDADO):**
-        * Adicione sua chave da API do Google Gemini aos **Secrets** do seu aplicativo no Streamlit Cloud com o nome `GOOGLE_API_KEY`.
-        * **Adapte o código:** Remova o input manual e leia a chave com `api_key = st.secrets["GOOGLE_API_KEY"]` no início da função `analyze_text_with_ai`.
-
-    4.  Faça o upload dos arquivos para um repositório GitHub e conecte ao Streamlit Cloud.
-    """
-)
-st.sidebar.markdown("---")
-st.sidebar.markdown("Desenvolvido com Streamlit, Tesseract OCR e Google Gemini.")
 
 # --- Área Principal ---
 st.title("🔍 Aplicativo OCR com Análise via Google Gemini")
