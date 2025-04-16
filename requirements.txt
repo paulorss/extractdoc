@@ -2,3 +2,4 @@ streamlit
 pillow
 pytesseract
 pdf2image
+google-generativeai
