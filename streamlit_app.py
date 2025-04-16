@@ -301,7 +301,7 @@ if uploaded_file is not None:
         try:
             if file_type in ['image/png', 'image/jpeg', 'image/jpg']:
                 image = Image.open(io.BytesIO(file_bytes))
-                st.image(image, caption='Imagem Carregada', use_column_width='auto')
+                st.image(image, caption='Imagem Carregada', use_container_width='auto')
             elif file_type == 'application/pdf':
                 st.info("Exibindo a primeira página do PDF...")
                 try:
